@@ -1,0 +1,336 @@
+/**
+ * Acode 多语言错误检查器（支持 JS/HTML/CSS/Python/Lua/C/C++/C#）
+ * 核心功能：未闭合符号、语法格式、关键字误用、基础语义错误检测
+ */
+class AcodeErrorChecker {
+  constructor() {
+    this.editor = acode.getEditor(); // Acode 编辑器实例
+    // 新增支持的语言：Python/Lua/C/C++/C#
+    this.supportedLangs = ["javascript", "html", "css", "python", "lua", "c", "cpp", "csharp"];
+  }
+
+  // 主检查入口
+  checkErrors() {
+    const currentLang = this._getCurrentLang();
+    if (!this.supportedLangs.includes(currentLang)) {
+      this._showMsg(`暂不支持 ${currentLang} 语言的错误检测`);
+      return;
+    }
+
+    const code = this.editor.getValue();
+    const errors = [];
+
+    // 分支：新增语言的检测方法
+    switch (currentLang) {
+      case "javascript": errors.push(...this._checkJS(code)); break;
+      case "html": errors.push(...this._checkHTML(code)); break;
+      case "css": errors.push(...this._checkCSS(code)); break;
+      case "python": errors.push(...this._checkPython(code)); break;
+      case "lua": errors.push(...this._checkLua(code)); break;
+      case "c": 
+      case "cpp": errors.push(...this._checkC_CPP(code)); break; // C/C++ 逻辑通用
+      case "csharp": errors.push(...this._checkCSharp(code)); break;
+    }
+
+    this._showErrors(errors);
+  }
+
+  // -------------------------- 新增：Python 检测 --------------------------
+  _checkPython(code) {
+    const errors = [];
+    const lines = code.split("\n");
+
+    // 1. 缩进错误（Python 核心语法）：检测缩进不一致、tab与空格混用
+    let prevIndent = 0;
+    lines.forEach((line, lineNum) => {
+      const trimLine = line.trim();
+      if (trimLine === "" || trimLine.startsWith("#")) return; // 跳过空行/注释
+
+      // 计算当前行缩进（空格数，tab 按 4 空格算）
+      const spaceIndent = line.search(/\S/);
+      const hasTab = line.includes("\t");
+      if (hasTab) {
+        errors.push({
+          type: "Python 缩进错误",
+          msg: "不建议混用 Tab 和空格缩进（建议统一用 4 空格）",
+          line: lineNum + 1 // 行号从 1 开始
+        });
+      }
+
+      // 检测缩进逻辑（如：if 后换行应缩进）
+      const prevLine = lineNum > 0 ? lines[lineNum - 1].trim() : "";
+      const needIndent = prevLine.endsWith(":") && !prevLine.startsWith("#");
+      if (needIndent && spaceIndent <= prevIndent) {
+        errors.push({
+          type: "Python 缩进错误",
+          msg: `":" 后代码应缩进（当前缩进 ${spaceIndent} 空格，需大于前一行 ${prevIndent} 空格）`,
+          line: lineNum + 1
+        });
+      }
+      prevIndent = spaceIndent;
+    });
+
+    // 2. 未闭合符号（括号/引号）
+    errors.push(...this._checkCommonSymbols(code, ["(", ")", "{", "}", "[", "]", "\"", "'"]));
+
+    // 3. 关键字误用（如：使用关键字作为变量名）
+    const pyKeywords = new Set(["if", "else", "for", "while", "def", "class", "import", "from", "return", "print", "True", "False", "None"]);
+    const varRegex = /\b(\w+)\b/g;
+    code.replace(varRegex, (varName) => {
+      if (pyKeywords.has(varName) && !code.includes(`${varName}(`)) { // 排除函数调用（如 print()）
+        errors.push({
+          type: "Python 语法错误",
+          msg: `关键字 "${varName}" 不能作为变量名`,
+          line: this._getLineNum(code, code.indexOf(varName))
+        });
+      }
+    });
+
+    return errors;
+  }
+
+  // -------------------------- 新增：Lua 检测 --------------------------
+  _checkLua(code) {
+    const errors = [];
+    const lines = code.split("\n");
+
+    // 1. Lua 关键字语法（如：end 缺失、then 缺失）
+    const blockKeywords = ["if", "for", "while", "function", "repeat", "do"];
+    const endKeywords = ["end", "until"];
+    const blockStack = []; // 跟踪代码块（需匹配 end/until）
+
+    lines.forEach((line, lineNum) => {
+      const trimLine = line.trim();
+      if (trimLine === "" || trimLine.startsWith("--")) return;
+
+      // 检测代码块开始（如 if/function）
+      blockKeywords.forEach(keyword => {
+        if (trimLine.startsWith(`${keyword} `) || trimLine === keyword) {
+          // 特殊处理：if 需带 then
+          if (keyword === "if" && !trimLine.includes("then")) {
+            errors.push({
+              type: "Lua 语法错误",
+              msg: `"if" 语句必须包含 "then"（如：if a then）`,
+              line: lineNum + 1
+            });
+          }
+          blockStack.push({ type: keyword, line: lineNum + 1 });
+        }
+      });
+
+      // 检测代码块结束（如 end/until）
+      endKeywords.forEach(keyword => {
+        if (trimLine === keyword) {
+          const lastBlock = blockStack.pop();
+          if (!lastBlock) {
+            errors.push({
+              type: "Lua 语法错误",
+              msg: `多余的 "${keyword}"（无匹配的代码块开始）`,
+              line: lineNum + 1
+            });
+          } else if ((keyword === "until" && lastBlock.type !== "repeat") || (keyword === "end" && lastBlock.type === "repeat")) {
+            errors.push({
+              type: "Lua 语法错误",
+              msg: `"${lastBlock.type}" 需用 "${lastBlock.type === "repeat" ? "until" : "end"}" 闭合，而非 "${keyword}"`,
+              line: lineNum + 1
+            });
+          }
+        }
+      });
+    });
+
+    // 剩余未闭合的代码块
+    blockStack.forEach(block => {
+      errors.push({
+        type: "Lua 语法错误",
+        msg: `"${block.type}" 代码块未闭合（需添加 "${block.type === "repeat" ? "until" : "end"}"）`,
+        line: block.line
+      });
+    });
+
+    // 2. 未闭合符号（括号/引号/方括号）
+    errors.push(...this._checkCommonSymbols(code, ["(", ")", "{", "}", "[", "]", "\"", "'"]));
+
+    return errors;
+  }
+
+  // -------------------------- 新增：C/C++ 检测 --------------------------
+  _checkC_CPP(code) {
+    const errors = [];
+    const lines = code.split("\n");
+
+    // 1. 语句结束符缺失（C/C++ 需 ; 结尾）
+    lines.forEach((line, lineNum) => {
+      const trimLine = line.trim();
+      if (trimLine === "" || trimLine.startsWith("//") || trimLine.endsWith("{") || trimLine.endsWith("}") || trimLine.endsWith(":")) {
+        return; // 跳过空行/注释/代码块括号/switch case
+      }
+
+      // 排除函数声明（如 int func(); 已带 ;）和控制语句（if/for 后无 ;）
+      const isControlStmt = ["if", "for", "while", "do", "switch"].some(key => trimLine.startsWith(`${key}(`));
+      const isFuncDecl = /\w+\s+\w+\(.*\)\s*;/.test(trimLine); // 函数声明（如 void test();）
+      const isExprStmt = !isControlStmt && !isFuncDecl && !trimLine.includes("=") && !trimLine.includes("+") && !trimLine.includes("-");
+
+      if (!trimLine.endsWith(";") && !isControlStmt && !isExprStmt) {
+        errors.push({
+          type: "C/C++ 语法错误",
+          msg: `语句缺失结束符 ";"（非控制语句需以 ; 结尾）`,
+          line: lineNum + 1
+        });
+      }
+    });
+
+    // 2. 未闭合符号（括号/花括号/方括号/引号）
+    errors.push(...this._checkCommonSymbols(code, ["(", ")", "{", "}", "[", "]", "\"", "'"]));
+
+    // 3. 关键字误用（如：用 int 作为变量名）
+    const cKeywords = new Set(["int", "char", "float", "double", "void", "if", "else", "for", "while", "do", "switch", "case", "break", "return", "class", "struct", "enum"]);
+    const varRegex = /\b(\w+)\b/g;
+    code.replace(varRegex, (varName) => {
+      if (cKeywords.has(varName) && !code.includes(`${varName} `)) { // 排除类型声明（如 int a）
+        errors.push({
+          type: "C/C++ 语法错误",
+          msg: `关键字 "${varName}" 不能作为变量名`,
+          line: this._getLineNum(code, code.indexOf(varName))
+        });
+      }
+    });
+
+    return errors;
+  }
+
+  // -------------------------- 新增：C# 检测 --------------------------
+  _checkCSharp(code) {
+    const errors = [];
+    const lines = code.split("\n");
+
+    // 1. C# 特有语法（如：namespace/class 未闭合、using 缺失）
+    const blockStack = []; // 跟踪 namespace/class/method 块
+    const csBlockKeys = ["namespace", "class", "struct", "interface", "method", "if", "for", "while", "do"];
+
+    lines.forEach((line, lineNum) => {
+      const trimLine = line.trim();
+      if (trimLine === "" || trimLine.startsWith("//")) return;
+
+      // 检测块开始（如 namespace ClassName {）
+      csBlockKeys.forEach(key => {
+        if (trimLine.startsWith(`${key} `) && trimLine.includes("{")) {
+          blockStack.push({ type: key, line: lineNum + 1 });
+        }
+      });
+
+      // 检测块结束（}）
+      if (trimLine === "}") {
+        const lastBlock = blockStack.pop();
+        if (!lastBlock) {
+          errors.push({
+            type: "C# 语法错误",
+            msg: `多余的 "}"（无匹配的代码块开始）`,
+            line: lineNum + 1
+          });
+        }
+      }
+
+      // 检测 using 语句（C# 需先 using 再用命名空间）
+      if (trimLine.startsWith("using ") && !trimLine.endsWith(";")) {
+        errors.push({
+          type: "C# 语法错误",
+          msg: `"using" 语句需以 ";" 结尾（如：using System;）`,
+          line: lineNum + 1
+        });
+      }
+    });
+
+    // 剩余未闭合的代码块
+    blockStack.forEach(block => {
+      errors.push({
+        type: "C# 语法错误",
+        msg: `"${block.type}" 代码块未闭合（需添加 "}"）`,
+        line: block.line
+      });
+    });
+
+    // 2. 未闭合符号（同 C/C++）
+    errors.push(...this._checkCommonSymbols(code, ["(", ")", "{", "}", "[", "]", "\"", "'"]));
+
+    // 3. 语句结束符缺失（同 C/C++）
+    lines.forEach((line, lineNum) => {
+      const trimLine = line.trim();
+      if (trimLine === "" || trimLine.startsWith("//") || trimLine.endsWith("{") || trimLine.endsWith("}") || trimLine.endsWith(":")) return;
+      const isControlStmt = ["if", "for", "while", "do", "switch"].some(key => trimLine.startsWith(`${key}(`));
+      if (!trimLine.endsWith(";") && !isControlStmt) {
+        errors.push({
+          type: "C# 语法错误",
+          msg: `语句缺失结束符 ";"`,
+          line: lineNum + 1
+        });
+      }
+    });
+
+    return errors;
+  }
+
+  // -------------------------- 原有语言检测（保持不变） --------------------------
+  _checkJS(code) { /* 同原代码，此处省略（复制原 _checkJS 方法即可） */ }
+  _checkHTML(code) { /* 同原代码，此处省略 */ }
+  _checkCSS(code) { /* 同原代码，此处省略 */ }
+
+  // -------------------------- 通用辅助方法 --------------------------
+  // 通用符号检测（括号/引号未闭合，支持多语言复用）
+  _checkCommonSymbols(code, symbols) {
+    const errors = [];
+    const stack = [];
+    const pairs = { "(": ")", "{": "}", "[": "]", "\"": "\"", "'": "'" }; // 符号配对
+
+    for (let i = 0; i < code.length; i++) {
+      const char = code[i];
+      if (!symbols.includes(char)) continue;
+
+      // 处理引号（特殊：单/双引号自身配对，需跳过转义符 \' \"）
+      if (char === "\"" || char === "'") {
+        if (stack.length > 0 && stack[stack.length - 1].symbol === char && code[i - 1] !== "\\") {
+          stack.pop(); // 闭合引号
+        } else if (code[i - 1] !== "\\") {
+          stack.push({ symbol: char, line: this._getLineNum(code, i) }); // 开启引号
+        }
+        continue;
+      }
+
+      // 处理括号类符号
+      if (pairs[char]) { // 左符号（如 ( { [）
+        stack.push({ symbol: char, line: this._getLineNum(code, i) });
+      } else { // 右符号（如 ) } ]）
+        const lastLeft = stack.pop();
+        const matchLeft = Object.keys(pairs).find(key => pairs[key] === char); // 找到对应的左符号
+        if (!lastLeft) {
+          errors.push({ type: "语法错误", msg: `多余的 "${char}"`, line: this._getLineNum(code, i) });
+        } else if (lastLeft.symbol !== matchLeft) {
+          errors.push({ type: "语法错误", msg: `符号不匹配：应为 "${pairs[lastLeft.symbol]}"，实际为 "${char}"`, line: lastLeft.line });
+        }
+      }
+    }
+
+    // 未闭合的符号
+    stack.forEach(item => {
+      errors.push({ type: "语法错误", msg: `未闭合的 "${item.symbol}"`, line: item.line });
+    });
+    return errors;
+  }
+
+  _getCurrentLang() {
+    const fileName = this.editor.getFileName() || "";
+    const ext = fileName.split(".").pop().toLowerCase();
+    // 映射文件后缀到语言名
+    const extMap = { "js": "javascript", "html": "html", "css": "css", "py": "python", "lua": "lua", "c": "c", "cpp": "cpp", "cc": "cpp", "cs": "csharp" };
+    return extMap[ext] || "plaintext";
+  }
+
+  _getLineNum(code, index) { return code.substring(0, index).split("\n").length + 1; }
+  _isJSKeyword(word) { /* 同原代码，此处省略 */ }
+  _showMsg(msg) { acode.showToast(msg, { duration: 3000 }); }
+  _showErrors(errors) { /* 同原代码，此处省略 */ }
+}
+
+// 初始化执行
+const errorChecker = new AcodeErrorChecker();
+errorChecker.checkErrors();
