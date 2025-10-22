@@ -1,0 +1,885 @@
+// 错误检查插件 - error-checker-complete.js
+api.registerPlugin({
+    name: 'CompleteErrorChecker',
+    author: 'Your Name',
+    description: '提供实时错误检查功能，支持多语言',
+    version: '2.0.0',
+    
+    // 插件初始化
+    init() {
+        this.setupErrorChecking();
+        this.createStatusBar();
+        this.setupContextMenu();
+    },
+    
+    // 设置错误检查
+    setupErrorChecking() {
+        // 监听编辑器内容变化
+        editorManager.editor.on('change', this.debounce(() => {
+            this.checkForErrors();
+        }, 500));
+        
+        // 监听文件切换
+        editorManager.on('file-open', () => {
+            setTimeout(() => this.checkForErrors(), 100);
+        });
+    },
+    
+    // 防抖函数，避免频繁检查
+    debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    },
+    
+    // 主要错误检查逻辑
+    checkForErrors() {
+        const editor = editorManager.editor;
+        const content = editor.getValue();
+        const file = editorManager.activeFile;
+        
+        if (!file) return;
+        
+        // 根据文件类型调用不同的检查器
+        const errors = this.getErrorsByFileType(content, file.name);
+        
+        // 在界面上显示错误
+        this.displayErrors(errors);
+    },
+    
+    // 根据文件类型获取错误
+    getErrorsByFileType(content, filename) {
+        const extension = filename.split('.').pop().toLowerCase();
+        const errors = [];
+        
+        switch(extension) {
+            case 'js':
+            case 'mjs':
+            case 'cjs':
+            case 'jsx':
+                return this.checkJavaScript(content);
+            case 'html':
+            case 'htm':
+                return this.checkHTML(content);
+            case 'css':
+            case 'scss':
+            case 'less':
+                return this.checkCSS(content);
+            case 'json':
+            case 'json5':
+                return this.checkJSON(content);
+            case 'py':
+                return this.checkPython(content);
+            case 'lua':
+                return this.checkLua(content);
+            case 'c':
+            case 'cpp':
+            case 'cc':
+            case 'cxx':
+            case 'h':
+            case 'hpp':
+                return this.checkCpp(content);
+            case 'cs':
+                return this.checkCSharp(content);
+            default:
+                return errors;
+        }
+    },
+    
+    // === JavaScript 错误检查 ===
+    checkJavaScript(content) {
+        const errors = [];
+        
+        try {
+            // 基础语法检查
+            new Function(content);
+        } catch (e) {
+            const lineMatch = e.stack.match(/<anonymous>:(\d+):(\d+)/);
+            if (lineMatch) {
+                errors.push({
+                    line: parseInt(lineMatch[1]) - 1,
+                    column: parseInt(lineMatch[2]),
+                    message: e.message,
+                    type: 'javascript',
+                    severity: 'error'
+                });
+            }
+        }
+        
+        // 常见错误模式检查
+        const lines = content.split('\n');
+        lines.forEach((line, index) => {
+            // 检查未闭合的括号
+            const openBraces = (line.match(/\(/g) || []).length;
+            const closeBraces = (line.match(/\)/g) || []).length;
+            
+            if (openBraces !== closeBraces) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '可能缺少闭合括号',
+                    type: 'javascript',
+                    severity: 'warning'
+                });
+            }
+            
+            // 检查未闭合的字符串
+            const singleQuotes = (line.match(/'/g) || []).length;
+            const doubleQuotes = (line.match(/"/g) || []).length;
+            const backticks = (line.match(/`/g) || []).length;
+            
+            if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0 || backticks % 2 !== 0) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '可能缺少闭合的引号',
+                    type: 'javascript',
+                    severity: 'warning'
+                });
+            }
+        });
+        
+        return errors;
+    },
+    
+    // === HTML 错误检查 ===
+    checkHTML(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        
+        let tagStack = [];
+        
+        lines.forEach((line, index) => {
+            // 简单的标签匹配检查
+            const tagMatches = line.match(/<(\/?)(\w+)[^>]*>/g) || [];
+            
+            tagMatches.forEach(tag => {
+                const isClosing = tag.startsWith('</');
+                const tagName = tag.match(/<(\/?)(\w+)/)[2];
+                
+                if (!isClosing) {
+                    // 开始标签
+                    if (!tag.endsWith('/>') && !['img', 'br', 'input', 'meta', 'link'].includes(tagName)) {
+                        tagStack.push({ tag: tagName, line: index });
+                    }
+                } else {
+                    // 结束标签
+                    const lastTag = tagStack.pop();
+                    if (lastTag && lastTag.tag !== tagName) {
+                        errors.push({
+                            line: index,
+                            column: line.indexOf(tag),
+                            message: `标签不匹配: 期望 </${lastTag.tag}> 但找到 </${tagName}>`,
+                            type: 'html',
+                            severity: 'error'
+                        });
+                    }
+                }
+            });
+        });
+        
+        // 检查未闭合的标签
+        tagStack.forEach(unclosedTag => {
+            errors.push({
+                line: unclosedTag.line,
+                column: 0,
+                message: `未闭合的标签: <${unclosedTag.tag}>`,
+                type: 'html',
+                severity: 'warning'
+            });
+        });
+        
+        return errors;
+    },
+    
+    // === CSS 错误检查 ===
+    checkCSS(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        
+        lines.forEach((line, index) => {
+            // 检查未闭合的花括号
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            
+            if (openBraces !== closeBraces) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: 'CSS规则可能缺少闭合花括号',
+                    type: 'css',
+                    severity: 'warning'
+                });
+            }
+            
+            // 检查缺少分号
+            if (line.trim() && !line.trim().endsWith('{') && 
+                !line.trim().endsWith('}') && !line.includes('@') &&
+                !line.trim().endsWith(';') && !line.trim().endsWith(',')) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '可能缺少分号',
+                    type: 'css',
+                    severity: 'warning'
+                });
+            }
+        });
+        
+        return errors;
+    },
+    
+    // === JSON 错误检查 ===
+    checkJSON(content) {
+        const errors = [];
+        
+        try {
+            JSON.parse(content);
+        } catch (e) {
+            const lineMatch = e.message.match(/position\s+(\d+)/);
+            if (lineMatch) {
+                const position = parseInt(lineMatch[1]);
+                const lines = content.substring(0, position).split('\n');
+                const lineNumber = lines.length - 1;
+                const column = lines[lines.length - 1].length;
+                
+                errors.push({
+                    line: lineNumber,
+                    column: column,
+                    message: e.message,
+                    type: 'json',
+                    severity: 'error'
+                });
+            }
+        }
+        
+        return errors;
+    },
+    
+    // === Python 错误检查 ===
+    checkPython(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        let indentStack = [0];
+        let inMultiLineString = false;
+        let multiLineStringChar = '';
+        
+        // 检查缩进和语法
+        lines.forEach((line, index) => {
+            const trimmedLine = line.trim();
+            const currentIndent = line.length - trimmedLine.length;
+            
+            // 跳过空行和注释
+            if (!trimmedLine || trimmedLine.startsWith('#')) {
+                return;
+            }
+            
+            // 处理多行字符串
+            if (inMultiLineString) {
+                if (trimmedLine.includes(multiLineStringChar) && 
+                    trimmedLine.split(multiLineStringChar).length % 2 === 0) {
+                    inMultiLineString = false;
+                }
+                return;
+            }
+            
+            // 检查多行字符串开始
+            const tripleQuotes = trimmedLine.match(/("""|''')/g);
+            if (tripleQuotes && tripleQuotes.length % 2 !== 0) {
+                inMultiLineString = true;
+                multiLineStringChar = tripleQuotes[0];
+            }
+            
+            // 检查缩进
+            const lastIndent = indentStack[indentStack.length - 1];
+            if (currentIndent > lastIndent) {
+                // 增加缩进
+                indentStack.push(currentIndent);
+            } else if (currentIndent < lastIndent) {
+                // 减少缩进 - 检查是否匹配之前的缩进
+                if (!indentStack.includes(currentIndent)) {
+                    errors.push({
+                        line: index,
+                        column: 0,
+                        message: '缩进不一致',
+                        type: 'python',
+                        severity: 'error'
+                    });
+                } else {
+                    // 弹出直到找到匹配的缩进
+                    while (indentStack.length > 1 && indentStack[indentStack.length - 1] > currentIndent) {
+                        indentStack.pop();
+                    }
+                }
+            }
+            
+            // 检查常见语法错误
+            if (trimmedLine.endsWith(':')) {
+                // 控制结构应该缩进下一行
+                if (index + 1 < lines.length) {
+                    const nextLine = lines[index + 1];
+                    const nextIndent = nextLine.length - nextLine.trimLeft().length;
+                    if (nextIndent <= currentIndent && nextLine.trim()) {
+                        errors.push({
+                            line: index,
+                            column: trimmedLine.length - 1,
+                            message: '控制结构后应该缩进',
+                            type: 'python',
+                            severity: 'warning'
+                        });
+                    }
+                }
+            }
+            
+            // 检查未闭合的括号
+            const openParen = (line.match(/\(/g) || []).length;
+            const closeParen = (line.match(/\)/g) || []).length;
+            const openBracket = (line.match(/\[/g) || []).length;
+            const closeBracket = (line.match(/\]/g) || []).length;
+            const openBrace = (line.match(/\{/g) || []).length;
+            const closeBrace = (line.match(/\}/g) || []).length;
+            
+            if (openParen !== closeParen) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '括号不匹配',
+                    type: 'python',
+                    severity: 'error'
+                });
+            }
+            
+            if (openBracket !== closeBracket) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '方括号不匹配',
+                    type: 'python',
+                    severity: 'error'
+                });
+            }
+            
+            if (openBrace !== closeBrace) {
+                errors.push({
+                    line: index,
+                    column: line.length - 1,
+                    message: '花括号不匹配',
+                    type: 'python',
+                    severity: 'error'
+                });
+            }
+            
+            // 检查导入语句
+            if (trimmedLine.startsWith('import ') || trimmedLine.startsWith('from ')) {
+                const importParts = trimmedLine.split(' ');
+                if (importParts.length < 2) {
+                    errors.push({
+                        line: index,
+                        column: 0,
+                        message: '无效的导入语句',
+                        type: 'python',
+                        severity: 'error'
+                    });
+                }
+            }
+        });
+        
+        return errors;
+    },
+    
+    // === Lua 错误检查 ===
+    checkLua(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        let blockCommentLevel = 0;
+        
+        lines.forEach((line, index) => {
+            let currentLine = line;
+            
+            // 处理块注释
+            while (currentLine.includes('--[[') || currentLine.includes('--]]') || 
+                   (blockCommentLevel > 0 && currentLine.includes(']]'))) {
+                
+                if (blockCommentLevel === 0 && currentLine.includes('--[[')) {
+                    blockCommentLevel = 1;
+                    currentLine = currentLine.replace('--[[', '');
+                } else if (blockCommentLevel > 0 && currentLine.includes(']]')) {
+                    blockCommentLevel--;
+                    currentLine = currentLine.replace(']]', '');
+                } else {
+                    break;
+                }
+            }
+            
+            if (blockCommentLevel > 0) {
+                return; // 在块注释中，跳过检查
+            }
+            
+            // 检查 then 和 end 的匹配
+            const thenCount = (currentLine.match(/\bthen\b/g) || []).length;
+            const endCount = (currentLine.match(/\bend\b/g) || []).length;
+            
+            // 检查函数定义
+            if (currentLine.match(/\bfunction\b/) && !currentLine.match(/\bend\b/)) {
+                // 简单的函数定义检查
+                if (!currentLine.match(/function\s+\w/)) {
+                    errors.push({
+                        line: index,
+                        column: currentLine.indexOf('function'),
+                        message: '函数定义格式不正确',
+                        type: 'lua',
+                        severity: 'warning'
+                    });
+                }
+            }
+            
+            // 检查局部变量声明
+            if (currentLine.match(/\blocal\b/) && !currentLine.match(/\blocal\s+\w/)) {
+                errors.push({
+                    line: index,
+                    column: currentLine.indexOf('local'),
+                    message: '局部变量声明不完整',
+                    type: 'lua',
+                    severity: 'warning'
+                });
+            }
+            
+            // 检查表定义
+            const openBrace = (currentLine.match(/\{/g) || []).length;
+            const closeBrace = (currentLine.match(/\}/g) || []).length;
+            
+            if (openBrace !== closeBrace) {
+                errors.push({
+                    line: index,
+                    column: currentLine.length - 1,
+                    message: '表定义花括号不匹配',
+                    type: 'lua',
+                    severity: 'error'
+                });
+            }
+        });
+        
+        return errors;
+    },
+    
+    // === C/C++ 错误检查 ===
+    checkCpp(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        let braceStack = [];
+        let inComment = false;
+        let inString = false;
+        let escapeNext = false;
+        let stringChar = '';
+        
+        lines.forEach((line, index) => {
+            let currentLine = line;
+            let column = 0;
+            
+            // 处理字符串和注释
+            for (let i = 0; i < currentLine.length; i++) {
+                const char = currentLine[i];
+                const nextChar = currentLine[i + 1];
+                
+                if (escapeNext) {
+                    escapeNext = false;
+                    continue;
+                }
+                
+                if (char === '\\') {
+                    escapeNext = true;
+                    continue;
+                }
+                
+                if (!inComment && !inString) {
+                    if (char === '/' && nextChar === '/') {
+                        // 行注释开始，跳过剩余部分
+                        currentLine = currentLine.substring(0, i);
+                        break;
+                    }
+                    if (char === '/' && nextChar === '*') {
+                        inComment = true;
+                        i++; // 跳过下一个字符
+                        continue;
+                    }
+                    if (char === '"' || char === "'") {
+                        inString = true;
+                        stringChar = char;
+                        continue;
+                    }
+                } else if (inComment) {
+                    if (char === '*' && nextChar === '/') {
+                        inComment = false;
+                        i++; // 跳过下一个字符
+                        continue;
+                    }
+                    continue;
+                } else if (inString) {
+                    if (char === stringChar) {
+                        inString = false;
+                    }
+                    continue;
+                }
+                
+                // 检查括号匹配
+                if (char === '{' || char === '(' || char === '[') {
+                    braceStack.push({
+                        char: char,
+                        line: index,
+                        column: i
+                    });
+                } else if (char === '}' || char === ')' || char === ']') {
+                    if (braceStack.length === 0) {
+                        errors.push({
+                            line: index,
+                            column: i,
+                            message: `多余的闭合符号: ${char}`,
+                            type: 'cpp',
+                            severity: 'error'
+                        });
+                    } else {
+                        const last = braceStack.pop();
+                        if (!this.areBracketsMatching(last.char, char)) {
+                            errors.push({
+                                line: index,
+                                column: i,
+                                message: `括号不匹配: ${last.char} 和 ${char}`,
+                                type: 'cpp',
+                                severity: 'error'
+                            });
+                        }
+                    }
+                }
+                
+                // 检查语句结束分号
+                if (char === ';') {
+                    // 简单的分号检查
+                    const previousChars = currentLine.substring(0, i).trim();
+                    if (previousChars.endsWith('}') || previousChars.endsWith('{')) {
+                        // 在花括号后不需要分号
+                    }
+                }
+                
+                column = i;
+            }
+            
+            // 检查预处理指令
+            if (currentLine.trim().startsWith('#')) {
+                const directive = currentLine.trim().split(' ')[0];
+                const validDirectives = ['#include', '#define', '#ifdef', '#ifndef', '#endif', '#else', '#elif', '#if', '#pragma'];
+                
+                if (!validDirectives.includes(directive) && !directive.startsWith('#include')) {
+                    errors.push({
+                        line: index,
+                        column: 0,
+                        message: `未知的预处理指令: ${directive}`,
+                        type: 'cpp',
+                        severity: 'warning'
+                    });
+                }
+            }
+            
+            // 检查头文件包含
+            if (currentLine.includes('#include')) {
+                if (!currentLine.match(/#include\s+[<"][^>"]+[>"]/)) {
+                    errors.push({
+                        line: index,
+                        column: currentLine.indexOf('#include'),
+                        message: '头文件包含格式不正确',
+                        type: 'cpp',
+                        severity: 'error'
+                    });
+                }
+            }
+        });
+        
+        // 检查未闭合的括号
+        braceStack.forEach(unclosed => {
+            errors.push({
+                line: unclosed.line,
+                column: unclosed.column,
+                message: `未闭合的符号: ${unclosed.char}`,
+                type: 'cpp',
+                severity: 'error'
+            });
+        });
+        
+        return errors;
+    },
+    
+    // === C# 错误检查 ===
+    checkCSharp(content) {
+        const errors = [];
+        const lines = content.split('\n');
+        let braceStack = [];
+        let inComment = false;
+        let inString = false;
+        let inVerbatimString = false;
+        let escapeNext = false;
+        
+        lines.forEach((line, index) => {
+            let currentLine = line;
+            
+            for (let i = 0; i < currentLine.length; i++) {
+                const char = currentLine[i];
+                const nextChar = currentLine[i + 1];
+                
+                if (escapeNext) {
+                    escapeNext = false;
+                    continue;
+                }
+                
+                if (!inComment && !inString && !inVerbatimString) {
+                    if (char === '/' && nextChar === '/') {
+                        break; // 行注释
+                    }
+                    if (char === '/' && nextChar === '*') {
+                        inComment = true;
+                        i++;
+                        continue;
+                    }
+                    if (char === '@' && nextChar === '"') {
+                        inVerbatimString = true;
+                        i++;
+                        continue;
+                    }
+                    if (char === '"') {
+                        inString = true;
+                        continue;
+                    }
+                } else if (inComment) {
+                    if (char === '*' && nextChar === '/') {
+                        inComment = false;
+                        i++;
+                    }
+                    continue;
+                } else if (inString) {
+                    if (char === '\\') {
+                        escapeNext = true;
+                    } else if (char === '"') {
+                        inString = false;
+                    }
+                    continue;
+                } else if (inVerbatimString) {
+                    if (char === '"' && nextChar === '"') {
+                        i++; // 跳过转义的双引号
+                    } else if (char === '"') {
+                        inVerbatimString = false;
+                    }
+                    continue;
+                }
+                
+                // 检查括号匹配
+                if (char === '{' || char === '(' || char === '[') {
+                    braceStack.push({
+                        char: char,
+                        line: index,
+                        column: i
+                    });
+                } else if (char === '}' || char === ')' || char === ']') {
+                    if (braceStack.length === 0) {
+                        errors.push({
+                            line: index,
+                            column: i,
+                            message: `多余的闭合符号: ${char}`,
+                            type: 'csharp',
+                            severity: 'error'
+                        });
+                    } else {
+                        const last = braceStack.pop();
+                        if (!this.areBracketsMatching(last.char, char)) {
+                            errors.push({
+                                line: index,
+                                column: i,
+                                message: `括号不匹配: ${last.char} 和 ${char}`,
+                                type: 'csharp',
+                                severity: 'error'
+                            });
+                        }
+                    }
+                }
+                
+                // C# 特定检查
+                if (char === ';') {
+                    // 检查属性访问器
+                    const previousText = currentLine.substring(0, i);
+                    if (previousText.match(/(get|set)\s*\{/)) {
+                        errors.push({
+                            line: index,
+                            column: i,
+                            message: '属性访问器应该使用花括号而不是分号',
+                            type: 'csharp',
+                            severity: 'warning'
+                        });
+                    }
+                }
+            }
+            
+            // 检查C#关键字和模式
+            if (currentLine.includes('using ') && !currentLine.includes(';') && 
+                !currentLine.match(/using\s*\(/)) {
+                errors.push({
+                    line: index,
+                    column: currentLine.indexOf('using'),
+                    message: 'using语句缺少分号',
+                    type: 'csharp',
+                    severity: 'warning'
+                });
+            }
+            
+            // 检查命名空间声明
+            if (currentLine.includes('namespace ') && !currentLine.includes('{')) {
+                errors.push({
+                    line: index,
+                    column: currentLine.indexOf('namespace'),
+                    message: '命名空间声明后应该使用花括号',
+                    type: 'csharp',
+                    severity: 'warning'
+                });
+            }
+        });
+        
+        return errors;
+    },
+    
+    // 括号匹配辅助函数
+    areBracketsMatching(open, close) {
+        const pairs = { '(': ')', '[': ']', '{': '}' };
+        return pairs[open] === close;
+    },
+    
+    // 在编辑器中显示错误
+    displayErrors(errors) {
+        // 清除之前的标记
+        this.clearErrorMarkers();
+        
+        // 添加新的错误标记
+        errors.forEach(error => {
+            this.addErrorMarker(error);
+        });
+        
+        // 更新状态栏
+        this.updateStatusBar(errors);
+    },
+    
+    // 添加错误标记
+    addErrorMarker(error) {
+        const editor = editorManager.editor;
+        const session = editor.session;
+        
+        // 在行号处添加标记
+        session.addGutterDecoration(error.line, 'ace_error-line');
+        
+        // 添加下划线标记
+        const range = new AceRange(error.line, error.column, error.line, error.column + 1);
+        const markerClass = `ace_error-${error.severity} ace_lang-${error.type}`;
+        session.addMarker(range, markerClass, 'text', true);
+    },
+    
+    // 清除错误标记
+    clearErrorMarkers() {
+        const editor = editorManager.editor;
+        const session = editor.session;
+        
+        // 清除所有标记
+        session.removeMarker(session.$errorMarker);
+        session.removeMarker(session.$warningMarker);
+        
+        // 清除行号装饰
+        for (let i = 0; i < session.getLength(); i++) {
+            session.removeGutterDecoration(i, 'ace_error-line');
+        }
+    },
+    
+    // 创建状态栏
+    createStatusBar() {
+        this.statusBar = document.createElement('div');
+        this.statusBar.className = 'error-checker-status';
+        this.statusBar.style.cssText = `
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: #333;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            z-index: 1000;
+            font-family: monospace;
+        `;
+        
+        document.body.appendChild(this.statusBar);
+    },
+    
+    // 更新状态栏
+    updateStatusBar(errors) {
+        const errorCount = errors.filter(e => e.severity === 'error').length;
+        const warningCount = errors.filter(e => e.severity === 'warning').length;
+        const language = editorManager.activeFile ? 
+            editorManager.activeFile.name.split('.').pop().toUpperCase() : 'Unknown';
+        
+        this.statusBar.innerHTML = `
+            <div>语言: ${language}</div>
+            <div>错误: <span style="color: #ff6b6b">${errorCount}</span> | 
+                 警告: <span style="color: #ffd93d">${warningCount}</span></div>
+        `;
+        
+        if (errorCount > 0) {
+            this.statusBar.style.background = '#d32f2f';
+        } else if (warningCount > 0) {
+            this.statusBar.style.background = '#f57c00';
+        } else {
+            this.statusBar.style.background = '#388e3c';
+        }
+    },
+    
+    // 添加上下文菜单
+    setupContextMenu() {
+        this.contextMenu = document.createElement('div');
+        this.contextMenu.className = 'error-checker-context-menu';
+        this.contextMenu.style.cssText = `
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10000;
+            display: none;
+            font-family: system-ui;
+        `;
+        
+        document.body.appendChild(this.contextMenu);
+        
+        // 监听编辑器右键点击
+        editorManager.editor.container.addEventListener('contextmenu', (e) => {
+            this.showContextMenu(e);
+        });
+    },
+    
+    showContextMenu(e) {
+        const menuItems = [
+            { text: '重新检查错误', action: () => this.checkForErrors() },
+            { text: '清除所有错误标记', action: () => this.clearErrorMarkers() }
+        ];
+        
+        this.contextMenu.innerHTML = menuItems.map(item => 
+            `<div class="menu-item" style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #eee;"
+                  onclick="(${item.action.toString()})(); this.parentNode.style.display='none'">
+                ${item.text}
+             </div>`
+        ).join('');
+        
+        this.contextMenu.style.left = e.pageX + 'px';
+        this.contextMenu.style.top = e.pageY + 'px';
+        this.contextMenu.style.display = 'block';
+        
+        e.preventDefault();
+        
+        // 点击其他地方关闭菜单
+        setTim
